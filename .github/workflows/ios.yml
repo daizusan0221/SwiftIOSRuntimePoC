@@ -1,0 +1,61 @@
+name: Build unsigned iOS IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and verify iPhoneOS arm64 app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/logs
+          {
+            xcodebuild -version
+            xcrun --sdk iphoneos --show-sdk-version
+            xcrun --sdk iphoneos --show-sdk-build-version
+            xcrun --sdk iphoneos swiftc --version
+
+            sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+            app=out/Payload/SwiftIOSRuntimePoC.app
+            executable="$app/SwiftIOSRuntimePoC"
+            mkdir -p "$app"
+            cp Info.plist "$app/Info.plist"
+            plutil -lint "$app/Info.plist"
+
+            xcrun --sdk iphoneos swiftc -v -parse-as-library -target arm64-apple-ios17.0 \
+              -sdk "$sdk" -Xlinker -no_adhoc_codesign *.swift -o "$executable"
+            file "$executable"
+            test "$(xcrun lipo -archs "$executable")" = arm64
+            xcrun vtool -show-build "$executable"
+            xcrun otool -L "$executable"
+            python3 package_ipa.py "$app" out/SwiftIOSRuntimePoC-unsigned.ipa
+            unzip -Z1 out/SwiftIOSRuntimePoC-unsigned.ipa
+            shasum -a 256 out/SwiftIOSRuntimePoC-unsigned.ipa
+          } 2>&1 | tee out/logs/build.log
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: SwiftIOSRuntimePoC-unsigned
+          path: out/SwiftIOSRuntimePoC-unsigned.ipa
+          if-no-files-found: error
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-build-log
+          path: out/logs/build.log
+          if-no-files-found: warn
