@@ -44,8 +44,28 @@ CSVは計測ごとにアプリ内で永続保存され、再起動後も過去�
 
 予定の10秒より2秒超遅れたtickでは超過分を「推定空白」に加える。この値と最大連続稼働は観測されたtick間隔に基づくため、正確なOS停止時間や実稼働を保証しない。復帰時に過去のtickを生成しない。突然終了した場合はCSVの最終行より後の状態は不明。
 
+## Background Gateway Test
+
+iOS 26以降で、接続済みのGatewayを3・10・30・60分の観測に使う。オフライン計測とは同時に実行できない。試験が終わるかOSから終了通知が来たら、試験用の応答処理とGatewayを停止する。
+
+1. 専用Botをテストサーバーに Guild Install する。インストールのスコープは `bot` と `applications.commands`。対象チャンネルでBotに **チャンネルを見る・メッセージを送信・メッセージ履歴を読む** を付与し、試験するユーザーに **アプリコマンドを使う** を許可する。管理者権限と特権のMessage Content Intentは不要。Gatewayでコマンドを受けるため、専用アプリの Interactions Endpoint URL は空欄にする。
+2. 「Discord」タブで専用Bot Tokenを入力し接続する。READYを確認後、「BG Gateway」でテストサーバーID・チャンネルIDを入力し **テストサーバーに /ping を登録** を押す。登録は指定サーバーだけに反映される。同名・別定義の既存スラッシュコマンドは上書きしない。
+3. **バックグラウンド試験開始** を押し、BGTaskが `running` になってから、対象チャンネルで実際のメンションに続けて半角スペースと `ping` を入力する。続いて同じチャンネルから専用Botの `/ping` を実行する。どちらも `Pong!` を確認する。
+4. 最初は3分で前面表示を確認する。次にiPhoneをロックしたまま、別端末から両方式を試す。ロック・送信・返信の各時刻を別端末で記録し、復帰後にCSVの `ping_received` と `pong_succeeded` がロック中に記録されたか照合する。別アプリへの移動も別の試行で測る。
+5. 10・30・60分の試験では、開始から数分後と終了直前に同じ操作を行う。短い通信断を試す場合は `websocket_disconnected`、`websocket_reconnecting`、`resumed` または `ready` を比較する。Live Activityからの取消も別の試行で記録する。
+
+メンション付き本文はDiscordのMessage Content Intentの例外を利用する。スラッシュコマンドは固定応答を即時コールバックする。3秒の初回応答期限に収まらないイベントやHTTP 429は失敗として記録し、同じリクエストを再送しない。選択チャンネル外のメンションやコマンドには応答しない。
+
+CSVは実イベントのUTC時刻を保存する。`method` の `mention` / `slash` と、試験内だけで有効な `request` の番号で受信行と応答行を対応付ける。HTTP 2xxの応答行はDiscordが応答を受け付けた証拠で、ロック中だったことは外部の時刻記録と突き合わせる。アプリの `background` 状態だけでは画面ロックと別アプリ移動を区別できない。試験停止時に送信結果が未確定なら `pong_outcome_unknown` を残す。Token、Interaction Token、本文、ユーザーID・DiscordメッセージIDはCSVに含めない。
+
+Heartbeatは送信開始・送信成功・ACK・タイムアウト・切断時未ACKを別行にする。ACKはDiscordから識別子が返らないため、同一接続内の最古の未ACKに対応付けた推定遅延を記録する。接続累計とソケット別の数値を区別し、`pending` は現在の応答待ちを表す。画面上の単なる送信数とACK数の差には過去の切断も含まれる。
+
+継続処理の進捗は、Gateway状態を実際に観測して保存した5秒区画の数。停止中の区画は補完せず、観測空白があれば期間終了時に `window_incomplete` を記録する。実時間の継続はOSの判断に依存する。プロセスが通知なしに終了した場合は、CSVの最終行以降の状態を不明として扱う。AltStoreの再署名で許可タスクIDが実際のバンドルIDに追従しなければ試験は利用不可になる。
+
 ## 仕様
 
 - [Discord Gateway](https://docs.discord.com/developers/events/gateway)
+- [Discordのアプリコマンド](https://docs.discord.com/developers/interactions/application-commands)
+- [Discord Interactionの受信と応答](https://docs.discord.com/developers/interactions/receiving-and-responding)
 - [Appleの継続処理API](https://developer.apple.com/documentation/backgroundtasks/bgcontinuedprocessingtask)
 - [AltStore ClassicのWindows手順](https://faq.altstore.io/altstore-classic/how-to-install-altstore-windows)

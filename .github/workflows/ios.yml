@@ -27,7 +27,7 @@ jobs:
             xcodebuild -version
             xcrun --sdk iphoneos --show-sdk-version
             xcrun --sdk iphoneos --show-sdk-build-version
-            xcrun --sdk iphoneos swiftc --version
+            xcrun swiftc --version
 
             sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
             app=out/Payload/SwiftIOSRuntimePoC.app

@@ -3,6 +3,7 @@ import SwiftUI
 struct ExperimentScreen: View {
     @ObservedObject var experiment: OfflineExperiment
     let stopNetwork: () -> Void
+    let backgroundRunning: Bool
     @State private var mode: ExperimentMode = .normal
     @State private var minutes = 1
 
@@ -28,7 +29,7 @@ struct ExperimentScreen: View {
                 Button("計測開始") {
                     experiment.start(mode: mode, minutes: minutes, stopNetwork: stopNetwork)
                 }
-                .disabled(experiment.running || (mode == .continued && !experiment.continuedAvailable))
+                .disabled(backgroundRunning || experiment.running || (mode == .continued && !experiment.continuedAvailable))
                 Button("計測停止", role: .destructive) { experiment.stop() }
                     .disabled(!experiment.running)
             }

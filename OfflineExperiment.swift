@@ -323,28 +323,13 @@ final class OfflineExperiment: ObservableObject {
         String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), value)
     }
 
-    private func logDirectory() throws -> URL {
-        let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                                     appropriateFor: nil, create: true)
-            .appendingPathComponent("OfflineRuns", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
     private func refreshFiles() {
-        if let directory = try? logDirectory(),
-           let entries = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
-            files = entries.filter { $0.pathExtension == "csv" }
-                .sorted { $0.lastPathComponent > $1.lastPathComponent }
-        }
+        files = RunCSV.files("OfflineRuns")
     }
 
     private func makeLog() throws -> URL {
-        let filename = dates.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-            + "-" + UUID().uuidString.prefix(8) + ".csv"
-        let file = try logDirectory().appendingPathComponent(filename)
-        let header = "timestamp_utc,app_elapsed_seconds,run_elapsed_seconds,sequence,mode,event,app_state,task_state,power,batches_done,batches_total,estimated_gap_seconds,longest_observed_streak_seconds,sha256,error\r\n"
-        try Data(header.utf8).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        let header = "timestamp_utc,app_elapsed_seconds,run_elapsed_seconds,sequence,mode,event,app_state,task_state,power,batches_done,batches_total,estimated_gap_seconds,longest_observed_streak_seconds,sha256,error"
+        let file = try RunCSV.create(in: "OfflineRuns", timestamp: dates.string(from: Date()), header: header)
         refreshFiles()
         return file
     }
@@ -358,13 +343,8 @@ final class OfflineExperiment: ObservableObject {
                       precise(seconds(started.duration(to: now))), String(rows + 1), mode.rawValue, event,
                       currentAppState, taskState, powerState, String(completed), String(target),
                       precise(gap), precise(longest), checksum, error]
-        let line = values.map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }.joined(separator: ",")
         do {
-            let file = try FileHandle(forWritingTo: currentFile)
-            defer { try? file.close() }
-            try file.seekToEnd()
-            try file.write(contentsOf: Data((line + "\r\n").utf8))
-            try file.synchronize()
+            try RunCSV.append(values, to: currentFile)
             rows += 1
             return true
         } catch {
