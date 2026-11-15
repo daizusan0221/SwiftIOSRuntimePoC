@@ -147,7 +147,8 @@ final class OfflineExperiment: ObservableObject {
                 }
             }
         } else {
-            startTimer()
+            if mode == .assertion { beginAssertion() }
+            if running { startTimer() }
         }
     }
 
@@ -165,11 +166,8 @@ final class OfflineExperiment: ObservableObject {
         guard phase != next else { return }
         phase = next
         guard running else { return }
-        if !append("scene_\(appState)") { return }
-        if mode == .assertion {
-            if next == .background { beginAssertion() }
-            if next == .active { endAssertion(event: "assertion_ended_foreground") }
-        }
+        guard append("scene_\(appState(next))") else { return }
+        if mode == .assertion, next == .active, assertion == .invalid { beginAssertion() }
     }
 
     func lifecycle(_ event: String) {
@@ -290,12 +288,21 @@ final class OfflineExperiment: ObservableObject {
         }
     }
 
-    private var appState: String {
-        switch phase {
+    private func appState(_ scene: ScenePhase) -> String {
+        switch scene {
         case .active: return "foreground"
         case .inactive: return "inactive"
         case .background: return "background"
-        default: return "unknown"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private var currentAppState: String {
+        switch UIApplication.shared.applicationState {
+        case .active: return "foreground"
+        case .inactive: return "inactive"
+        case .background: return "background"
+        @unknown default: return "unknown"
         }
     }
 
@@ -349,7 +356,7 @@ final class OfflineExperiment: ObservableObject {
         let checksum = event == "tick" ? digest.map { String(format: "%02x", $0) }.joined() : ""
         let values = [dates.string(from: date), precise(seconds(launch.duration(to: now))),
                       precise(seconds(started.duration(to: now))), String(rows + 1), mode.rawValue, event,
-                      appState, taskState, powerState, String(completed), String(target),
+                      currentAppState, taskState, powerState, String(completed), String(target),
                       precise(gap), precise(longest), checksum, error]
         let line = values.map { "\"" + $0.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }.joined(separator: ",")
         do {

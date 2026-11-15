@@ -28,6 +28,7 @@ final class Gateway: NSObject, ObservableObject {
     private enum APIError: Error {
         case status(Int)
         case invalidResponse
+        case identifyLimit(Int)
     }
 
     private let http = URLSession(configuration: .ephemeral)
@@ -40,6 +41,8 @@ final class Gateway: NSObject, ObservableObject {
     private var resumable: SessionState?
     private var sequence: Int?
     private var lastIdentify: ContinuousClock.Instant?
+    private var identifiesRemaining = 0
+    private var identifyReset: ContinuousClock.Instant?
     private var pendingHeartbeat: ContinuousClock.Instant?
     private var socketFailure: String?
     private var stable = false
@@ -64,10 +67,17 @@ final class Gateway: NSObject, ObservableObject {
             do {
                 let data = try await request("gateway/bot", token: token)
                 guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let url = Self.gatewayURL(object["url"] as? String) else { throw APIError.invalidResponse }
+                      let url = Self.gatewayURL(object["url"] as? String),
+                      let limit = object["session_start_limit"] as? [String: Any],
+                      let remaining = limit["remaining"] as? Int, remaining >= 0,
+                      let reset = limit["reset_after"] as? Double, (0...172_800_000).contains(reset)
+                else { throw APIError.invalidResponse }
+                identifiesRemaining = remaining
+                identifyReset = ContinuousClock.now.advanced(by: .milliseconds(reset))
                 try await run(token: token, initialURL: url)
             } catch {
                 guard !Task.isCancelled else { return }
+                transport = "切断"
                 status = "接続終了"
                 log("接続終了: \(Self.describe(error))")
             }
@@ -140,6 +150,10 @@ final class Gateway: NSObject, ObservableObject {
                 retry = Retry(reason: "接続終了", delay: 1)
             } catch {
                 try Task.checkCancellation()
+                if case APIError.identifyLimit = error {
+                    closeSocket()
+                    throw error
+                }
                 let code = ws.closeCode.rawValue
                 if [4004, 4010, 4011, 4012, 4013, 4014].contains(code) {
                     closeSocket()
@@ -191,12 +205,17 @@ final class Gateway: NSObject, ObservableObject {
                     try await transmit(ws, op: 6, data: ["token": token, "session_id": resumable.id, "seq": sequence])
                     log("Resume送信")
                 } else {
+                    guard identifiesRemaining > 0 else {
+                        let wait = identifyReset.map { ContinuousClock.now.duration(to: $0).components.seconds } ?? 0
+                        throw APIError.identifyLimit(Int(max(0, wait)))
+                    }
                     if let lastIdentify {
                         let remaining = lastIdentify.advanced(by: .seconds(5.5)) - ContinuousClock.now
                         if remaining > .zero { try await Task.sleep(for: remaining) }
                     }
                     try Task.checkCancellation()
                     lastIdentify = .now
+                    identifiesRemaining -= 1
                     try await transmit(ws, op: 2, data: [
                         "token": token, "intents": 0,
                         "properties": ["os": "iOS", "browser": "SwiftIOSRuntimePoC", "device": "SwiftIOSRuntimePoC"]
@@ -343,6 +362,7 @@ final class Gateway: NSObject, ObservableObject {
         case APIError.status(429): return "HTTP 429（時間をおいて再試行）"
         case APIError.status(let code): return "Discord HTTP \(code)"
         case APIError.invalidResponse: return "Discordの応答形式またはBot認証を確認"
+        case APIError.identifyLimit(let seconds): return "Identifyの残枠がありません。\(seconds)秒後に再確認してください。"
         case let url as URLError: return "ネットワークエラー \(url.errorCode)"
         default: return "通信処理エラー"
         }
