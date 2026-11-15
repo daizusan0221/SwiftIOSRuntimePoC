@@ -1,15 +1,49 @@
 import SwiftUI
+import UIKit
 
 @main
+@MainActor
 struct RuntimeApp: App {
+    @UIApplicationDelegateAdaptor(RuntimeDelegate.self) private var delegate
+    @Environment(\.scenePhase) private var phase
     @StateObject private var gateway = Gateway()
+    @StateObject private var experiment = OfflineExperiment.shared
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                GatewayScreen(gateway: gateway, offline: false)
+            TabView {
+                NavigationStack {
+                    GatewayScreen(gateway: gateway, offline: experiment.running)
+                }
+                .tabItem { Label("Discord", systemImage: "network") }
+                NavigationStack {
+                    ExperimentScreen(experiment: experiment, stopNetwork: gateway.stopAll)
+                }
+                .tabItem { Label("オフライン計測", systemImage: "timer") }
+            }
+            .onChange(of: phase, initial: true) { _, next in experiment.sceneChanged(next) }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
+                experiment.lifecycle("protected_data_unavailable")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+                experiment.lifecycle("protected_data_available")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
+                experiment.lifecycle("battery_state_changed")
             }
         }
+    }
+}
+
+final class RuntimeDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        OfflineExperiment.shared.checkContinuedAvailability()
+        return true
+    }
+
+    func applicationWillTerminate(_ application: UIApplication) {
+        OfflineExperiment.shared.lifecycle("will_terminate")
     }
 }
 
