@@ -78,6 +78,7 @@ final class Gateway: NSObject, ObservableObject {
     private var heartbeatID = 0
     private var socketFailure: String?
     private var stable = false
+    private var attemptedResume = false
     private var botToken: String?
     private var botID: String?
     private var applicationID: String?
@@ -190,6 +191,7 @@ final class Gateway: NSObject, ObservableObject {
 
     private func run(token: String, initialURL: URL) async throws {
         var retries = 0
+        var failedResumes = 0
         while !Task.isCancelled {
             let ws = sockets.webSocketTask(with: resumable?.url ?? initialURL)
             socket = ws
@@ -200,6 +202,7 @@ final class Gateway: NSObject, ObservableObject {
             latency = "—"
             authenticated = false
             stable = false
+            attemptedResume = false
             socketFailure = nil
             transport = "接続中"
             ready = "待機中"
@@ -230,13 +233,21 @@ final class Gateway: NSObject, ObservableObject {
                     resetSession: [4007, 4009].contains(code)
                 )
                 if code == 4008 { retry.delay = max(5, retry.delay) }
-                if !stable, resumable != nil, socketFailure != nil, retries >= 2 { retry.resetSession = true }
                 if !(error is Retry) {
                     observe?(GatewayObservation(event: "websocket_error", error: socketFailure ?? Self.describe(error),
                                                 closeCode: failureCode))
                 }
             }
             let wasStable = stable
+            if wasStable { failedResumes = 0 }
+            if attemptedResume, !wasStable, terminal == nil {
+                failedResumes += 1
+                if failedResumes >= 2 { retry.resetSession = true }
+            }
+            if let failureCode, [4007, 4009].contains(failureCode) { retry.resetSession = true }
+            if retry.resetSession, attemptedResume {
+                observe?(GatewayObservation(event: "resume_fallback_identify"))
+            }
             if retry.resetSession { resetSession() }
             closeSocket(reason: retry.reason, code: failureCode)
             if let terminal { throw terminal }
@@ -256,6 +267,7 @@ final class Gateway: NSObject, ObservableObject {
         while !Task.isCancelled {
             let frame = try await ws.receive()
             let received = Date()
+            let receivedAt = ContinuousClock.now
             try Task.checkCancellation()
             let data: Data
             switch frame {
@@ -278,6 +290,7 @@ final class Gateway: NSObject, ObservableObject {
                 observe?(GatewayObservation(event: "hello", time: received))
                 startHeartbeat(ws, interval: ms / 1000)
                 if let resumable, let sequence {
+                    attemptedResume = true
                     try await transmit(ws, op: 6, data: ["token": token, "session_id": resumable.id, "seq": sequence])
                     log("Resume送信")
                     observe?(GatewayObservation(event: "resume_sent"))
@@ -334,11 +347,11 @@ final class Gateway: NSObject, ObservableObject {
                 if !pendingHeartbeats.isEmpty {
                     let heartbeat = pendingHeartbeats.removeFirst()
                     pendingCount = pendingHeartbeats.count
-                    let elapsed = heartbeat.started.duration(to: .now)
+                    let elapsed = heartbeat.started.duration(to: receivedAt)
                     let milliseconds = Double(elapsed.components.seconds) * 1_000
                         + Double(elapsed.components.attoseconds) / 1e15
                     latency = String(format: "%.0f ms", milliseconds)
-                    observe?(GatewayObservation(event: "heartbeat_ack", time: received, heartbeat: heartbeat.id,
+                    observe?(GatewayObservation(event: "heartbeat_ack", time: received, instant: receivedAt, heartbeat: heartbeat.id,
                                                 ackMS: milliseconds))
                 } else {
                     observe?(GatewayObservation(event: "heartbeat_ack_unmatched", time: received))
@@ -662,6 +675,12 @@ extension Gateway: URLSessionWebSocketDelegate {
 
     nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
                                 didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        // The receive loop reads closeCode and handles reconnection without logging the remote reason.
+        let received = Date()
+        let receivedAt = ContinuousClock.now
+        Task { @MainActor in
+            guard socket === webSocketTask else { return }
+            observe?(GatewayObservation(event: "websocket_close_frame", time: received, instant: receivedAt,
+                                        closeCode: closeCode.rawValue))
+        }
     }
 }

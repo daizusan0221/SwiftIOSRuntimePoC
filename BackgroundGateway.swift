@@ -44,7 +44,7 @@ final class BackgroundGateway: ObservableObject {
     }
 
     func start(gateway: Gateway, target: PingTarget, minutes: Int) {
-        guard !running, gateway.authenticated, !gateway.registering,
+        guard !running, gateway.authenticated, !gateway.registering, !gateway.sending,
               [3, 10, 30, 60].contains(minutes), Gateway.validID(target.guild), Gateway.validID(target.channel),
               UIApplication.shared.applicationState == .active else { return }
         guard #available(iOS 26.0, *), availabilityError == nil, let bundle = Bundle.main.bundleIdentifier else {
@@ -144,8 +144,12 @@ final class BackgroundGateway: ObservableObject {
                 do { try await Task.sleep(until: scheduled, clock: .continuous) } catch { return }
                 guard !Task.isCancelled, self.task === task else { return }
                 let actual = ContinuousClock.now
-                let skipped = max(0, Self.seconds(scheduled.duration(to: actual)))
-                if skipped < 5 {
+                let late = max(0, Self.seconds(scheduled.duration(to: actual)))
+                let skipped = min(expected - slot + 1, Int(late / 5))
+                if skipped > 0 {
+                    record(GatewayObservation(event: "observation_gap", error: "\(skipped) missed slots"))
+                }
+                if slot + skipped <= expected {
                     observed += 1
                     task.progress.completedUnitCount = Int64(observed)
                     task.updateTitle("Discord Gateway試験", subtitle: "観測 \(observed) / \(expected) · ACK \(gateway.socketACK)")
@@ -157,7 +161,7 @@ final class BackgroundGateway: ObservableObject {
                            message: full ? "観測期間終了" : "期間終了・観測に空白あり", success: full)
                     return
                 }
-                slot += max(1, Int(skipped / 5) + 1)
+                slot += skipped + 1
             }
         }
     }
